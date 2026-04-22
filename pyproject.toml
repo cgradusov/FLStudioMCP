@@ -1,0 +1,23 @@
+[project]
+name = "fl-studio-mcp"
+version = "0.1.0"
+description = "Comprehensive Model Context Protocol server for FL Studio — full control over transport, patterns, channels, mixer, plugins, piano roll, playlist, arrangement, automation and rendering."
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "fLMCP" }]
+dependencies = [
+    "mcp[cli]>=1.2.0",
+    "anyio>=4.0",
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+fl-studio-mcp = "fl_studio_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fl_studio_mcp"]

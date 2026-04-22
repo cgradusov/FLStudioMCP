@@ -1,0 +1,222 @@
+"""
+fLMCP piano-roll pyscript
+
+Runs inside FL Studio's piano roll when the user (or fl-studio-mcp) triggers
+Ctrl+Alt+Y / Cmd+Opt+Y. Processes queued requests from fLMCP_request.json
+and exports the current piano-roll state to fLMCP_state.json.
+
+Supported actions:
+  - clear                     delete all notes
+  - add_notes                 add notes  (time / duration in QUARTER NOTES)
+  - add_chord                 add a chord
+  - delete_notes              delete notes by (midi, time) match
+  - quantize                  snap notes to a grid
+  - transpose                 shift all notes by N semitones
+  - humanize                  jitter timing + velocity
+  - duplicate                 copy a time-range to another location
+  - export_only               no-op, just refresh state file
+"""
+
+import flpianoroll as flp
+import json
+import os
+import random
+
+
+def _script_dir():
+    return os.path.expanduser("~/Documents/Image-Line/FL Studio/Settings/Piano roll scripts")
+
+
+REQUEST = os.path.join(_script_dir(), "fLMCP_request.json")
+STATE = os.path.join(_script_dir(), "fLMCP_state.json")
+
+
+def _export_state():
+    ppq = flp.score.PPQ
+    notes = []
+    for i in range(flp.score.noteCount):
+        n = flp.score.getNote(i)
+        notes.append({
+            "midi": n.number,
+            "time_bars": (n.time / ppq) / 4.0 if ppq else 0,
+            "time_quarters": n.time / ppq if ppq else 0,
+            "duration_bars": (n.length / ppq) / 4.0 if ppq else 0,
+            "duration_quarters": n.length / ppq if ppq else 0,
+            "velocity": n.velocity,
+            "pan": n.pan,
+            "color": n.color,
+            "fcut": n.fcut,
+            "fres": n.fres,
+            "pitchofs": n.pitchofs,
+            "selected": n.selected,
+            "muted": n.muted,
+        })
+    with open(STATE, "w", encoding="utf-8") as f:
+        json.dump({"ppq": ppq, "noteCount": flp.score.noteCount, "notes": notes},
+                  f, indent=2)
+
+
+def _clear():
+    for i in range(flp.score.noteCount - 1, -1, -1):
+        flp.score.deleteNote(i)
+
+
+def _add_notes(req):
+    ppq = flp.score.PPQ
+    added = 0
+    for d in req.get("notes", []):
+        n = flp.Note()
+        n.number = int(d["midi"])
+        n.time = int(ppq * float(d.get("time", d.get("offset", 0))))
+        n.length = int(ppq * float(d.get("duration", 1.0)))
+        n.velocity = float(d.get("velocity", 0.8))
+        if "pan" in d:
+            n.pan = float(d["pan"])
+        flp.score.addNote(n)
+        added += 1
+    return added
+
+
+def _add_chord(req):
+    ppq = flp.score.PPQ
+    base_time = int(ppq * float(req.get("time", 0)))
+    base_dur = float(req.get("duration", 1.0))
+    added = 0
+    for d in req.get("notes", []):
+        n = flp.Note()
+        n.number = int(d["midi"])
+        n.time = base_time + int(ppq * float(d.get("offset", 0)))
+        n.length = int(ppq * float(d.get("duration", base_dur)))
+        n.velocity = float(d.get("velocity", 0.8))
+        flp.score.addNote(n)
+        added += 1
+    return added
+
+
+def _delete_notes(req):
+    ppq = flp.score.PPQ
+    criteria = []
+    for d in req.get("notes", []):
+        criteria.append((int(d["midi"]), int(ppq * float(d["time"]))))
+    deleted = 0
+    for i in range(flp.score.noteCount - 1, -1, -1):
+        n = flp.score.getNote(i)
+        for midi, t in criteria:
+            if n.number == midi and abs(n.time - t) <= ppq // 16:
+                flp.score.deleteNote(i)
+                deleted += 1
+                break
+    return deleted
+
+
+def _quantize(req):
+    ppq = flp.score.PPQ
+    grid_q = float(req.get("grid", 1.0))  # in quarter notes
+    grid_ticks = max(1, int(ppq * grid_q))
+    strength = max(0.0, min(1.0, float(req.get("strength", 1.0))))
+    moved = 0
+    for i in range(flp.score.noteCount):
+        n = flp.score.getNote(i)
+        snapped = round(n.time / grid_ticks) * grid_ticks
+        target = int(n.time + (snapped - n.time) * strength)
+        if target != n.time:
+            n.time = target
+            moved += 1
+    return moved
+
+
+def _transpose(req):
+    semis = int(req.get("semitones", 0))
+    for i in range(flp.score.noteCount):
+        n = flp.score.getNote(i)
+        n.number = max(0, min(127, n.number + semis))
+
+
+def _humanize(req):
+    ppq = flp.score.PPQ
+    tj = float(req.get("timing_jitter", 0.05)) * ppq
+    vj = float(req.get("velocity_jitter", 0.1))
+    for i in range(flp.score.noteCount):
+        n = flp.score.getNote(i)
+        n.time = max(0, int(n.time + random.uniform(-tj, tj)))
+        n.velocity = max(0.0, min(1.0, n.velocity + random.uniform(-vj, vj)))
+
+
+def _duplicate(req):
+    ppq = flp.score.PPQ
+    src = int(ppq * float(req["source_time"]))
+    length = int(ppq * float(req["length"]))
+    dest = int(ppq * float(req["dest_time"]))
+    delta = dest - src
+    new_notes = []
+    for i in range(flp.score.noteCount):
+        n = flp.score.getNote(i)
+        if src <= n.time < src + length:
+            clone = flp.Note()
+            clone.number = n.number
+            clone.time = n.time + delta
+            clone.length = n.length
+            clone.velocity = n.velocity
+            clone.pan = n.pan
+            new_notes.append(clone)
+    for n in new_notes:
+        flp.score.addNote(n)
+    return len(new_notes)
+
+
+def _dispatch(req):
+    action = req.get("action", "")
+    if action == "clear":
+        _clear()
+    elif action == "add_notes":
+        _add_notes(req)
+    elif action == "add_chord":
+        _add_chord(req)
+    elif action == "delete_notes":
+        _delete_notes(req)
+    elif action == "quantize":
+        _quantize(req)
+    elif action == "transpose":
+        _transpose(req)
+    elif action == "humanize":
+        _humanize(req)
+    elif action == "duplicate":
+        _duplicate(req)
+    elif action == "export_only":
+        pass  # just export below
+    else:
+        pass  # unknown — ignore to avoid breaking batch
+
+
+def _process_queue():
+    if not os.path.exists(REQUEST):
+        return
+    try:
+        with open(REQUEST, "r", encoding="utf-8") as f:
+            content = json.load(f)
+    except Exception:
+        return
+    if isinstance(content, dict):
+        content = [content]
+    if not isinstance(content, list):
+        return
+    for req in content:
+        try:
+            _dispatch(req)
+        except Exception:
+            pass
+    # clear the queue after we've run through it
+    try:
+        with open(REQUEST, "w", encoding="utf-8") as f:
+            f.write("[]")
+    except Exception:
+        pass
+
+
+def apply(form=None):
+    """Silent auto-mode — no UI prompts."""
+    _process_queue()
+    try:
+        _export_state()
+    except Exception:
+        pass

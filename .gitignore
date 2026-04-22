@@ -1,0 +1,68 @@
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+wheels/
+.eggs/
+*.manifest
+*.spec
+
+# --- Virtual envs ---------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+
+# --- Testing / coverage ---------------------------------------------------
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.cache
+
+# --- Type checkers / linters ---------------------------------------------
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+
+# --- Editors / IDEs -------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS artifacts ---------------------------------------------------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- Local agent / tool config (may contain absolute paths) --------------
+.claude/
+.cursor/
+.codeium/
+.aider*
+
+# --- Runtime artifacts produced by the bridge ----------------------------
+# JSON request/state files that the piano-roll pyscript exchanges with the
+# FL side — they're regenerated on every tool call and are user-specific.
+fLMCP_request.json
+fLMCP_state.json
+
+# --- Audio capture scratch -----------------------------------------------
+# Mic recordings go to the system temp dir by default, but keep the repo
+# clean if anything lands here.
+*.wav
+*.flac
+*.mp3
+*.ogg
+!tests/**/fixtures/*.wav
