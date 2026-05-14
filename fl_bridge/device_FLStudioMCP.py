@@ -1155,18 +1155,52 @@ def h_automation_record_mixer_volume(p):
 
 
 def h_automation_record_plugin_param(p):
+    """Record plugin-param automation.
+
+    FL's `plugins.setParamValue` does not always write to the host param when
+    the plugin is a VST3 (we've seen silent no-ops on TAL-U-NO-LX and 3x Osc
+    in FL 2025). The reliable path is `general.processRECEvent` with the
+    composite REC id `channels.getRecEventId(ch) + REC_Chan_Plugin_First +
+    paramIndex`, which feeds the automation recorder directly. We try that
+    first; if the REC ids aren't available in this FL build we fall back to
+    `setParamValue` so older versions still get *something*.
+    """
     idx = int(p["channel"]); slot = int(p.get("slot", -1))
-    ug = (p.get("location", "channel") == "channel")
+    on_mixer = (p.get("location", "channel") == "mixer")
     param = int(p["param"]); pts = p.get("points", [])
+    if not pts:
+        return {"ok": False, "error": "no points"}
+
+    rec_base = getattr(midi, "REC_Chan_Plugin_First", None)
+    from_max = getattr(midi, "FromMIDI_Max", 1073741824)
+    flags = (getattr(midi, "REC_UpdateValue", 0x10)
+             | midi.REC_Control
+             | midi.REC_UpdateControl
+             | getattr(midi, "REC_SetChanged", 0x40))
+
+    event_id = None
+    if rec_base is not None and not on_mixer and hasattr(channels, "getRecEventId"):
+        try:
+            event_id = channels.getRecEventId(idx) + rec_base + param
+        except Exception:
+            event_id = None
+
     transport.record(); transport.start()
+    written = 0
     last_t = 0.0
     for pt in pts:
         t = float(pt["time_bars"])
         _sleep_bars(max(0.0, t - last_t))
-        plugins.setParamValue(float(pt["value"]), param, idx, slot, ug)
+        v = float(pt["value"])
+        if event_id is not None:
+            general.processRECEvent(event_id, int(round(v * from_max)), flags)
+        else:
+            plugins.setParamValue(v, param, idx, slot, not on_mixer)
+        written += 1
         last_t = t
     transport.stop(); transport.record()
-    return {"ok": True, "points": len(pts)}
+    return {"ok": True, "points": written, "via": "rec_event" if event_id else "setParamValue",
+            "event_id": event_id}
 
 
 # ---- project ---------------------------------------------------------------
@@ -1243,7 +1277,33 @@ def h_project_save_undo(p):
 
 
 def h_project_render(p):
-    return {"ok": False, "error": "Rendering requires FL's render dialog; call ui.showWindow('playlist') then user triggers Ctrl+R."}
+    """Open FL's render dialog. Full headless render isn't exposed by FL's
+    Python API; the best we can do from inside a controller script is fire
+    the FPT_Render command (Ctrl+R) and let the user confirm. The MCP server
+    has a separate `project_render_cli` path that shells out to FL64.exe."""
+    fpt = _fpt("FPT_Render")
+    if fpt is None:
+        return {"ok": False, "error": "midi.FPT_Render not available in this FL build"}
+    transport.globalTransport(fpt, 1)
+    return {"ok": True, "note": "Render dialog opened. Confirm settings in FL and click Start."}
+
+
+def h_project_title(_):
+    """Best-effort access to FL's main window title (often contains the .flp
+    filename). Useful for inferring the project path for CLI render."""
+    title = None
+    for getter in ("getProgTitle", "getHintMsg"):
+        fn = getattr(ui, getter, None)
+        if fn is None:
+            continue
+        try:
+            t = fn()
+            if t:
+                title = t
+                break
+        except Exception:
+            continue
+    return {"title": title}
 
 
 def h_project_version(_):
@@ -1604,6 +1664,7 @@ _HANDLERS = {
     "project.undoHistory": h_project_undo_history,
     "project.saveUndo": h_project_save_undo,
     "project.render": h_project_render,
+    "project.title": h_project_title,
     "project.version": h_project_version,
     # ui
     "ui.focusedWindow": h_ui_focused,
